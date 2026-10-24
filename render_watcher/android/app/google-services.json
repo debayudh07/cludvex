@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "745530913014",
+    "project_id": "project1-48f5b",
+    "storage_bucket": "project1-48f5b.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:745530913014:android:d144ec1c2ef51213133cd7",
+        "android_client_info": {
+          "package_name": "com.cludvex.render_watcher"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyD0CVnmN07nTvyXlvjLIbzCmOkDIPs8VRw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

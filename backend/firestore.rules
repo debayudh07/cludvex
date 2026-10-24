@@ -1,0 +1,10 @@
+rules_version = '2';
+// Clients never touch Firestore directly. The backend uses the Admin SDK,
+// which bypasses these rules, so the encrypted Render keys stay server-side.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

@@ -137,7 +137,9 @@ class Alert {
     required this.suggestion,
     required this.evidence,
     this.verified = false,
-  });
+    bool? needsReview,
+    this.serviceName,
+  }) : _needsReview = needsReview;
 
   final String id;
   final String code;
@@ -154,8 +156,83 @@ class Alert {
   final String suggestion;
   final List<EvidenceLine> evidence;
   final bool verified;
+  final bool? _needsReview;
+  final String? serviceName;
 
   bool get isOpen => severity != Severity.resolved;
+
+  /// The agent was under the gate or the verifier disagreed: it's asking.
+  bool get needsReview => isOpen && (_needsReview ?? confidence < 0.75);
+
+  Alert withEvidence(List<EvidenceLine> lines) => Alert(
+        id: id,
+        code: code,
+        title: title,
+        headline: headline,
+        serviceId: serviceId,
+        severity: severity,
+        confidence: confidence,
+        timeAgo: timeAgo,
+        since: since,
+        occurrences: occurrences,
+        summary: summary,
+        cause: cause,
+        suggestion: suggestion,
+        evidence: lines,
+        verified: verified,
+        needsReview: _needsReview,
+        serviceName: serviceName,
+      );
+}
+
+/// Account status from GET /me.
+class Me {
+  const Me({
+    required this.renderConnected,
+    required this.watchedCount,
+    required this.actionsEnabled,
+    required this.maxWatched,
+    this.keyLast4,
+    this.githubLogin,
+  });
+
+  final bool renderConnected;
+  final int watchedCount;
+  final bool actionsEnabled;
+  final int maxWatched;
+  final String? keyLast4;
+  final String? githubLogin;
+}
+
+class MandateData {
+  const MandateData({
+    this.gate = 75,
+    this.pushAlerts = true,
+    this.verifier = true,
+    this.groupLines = true,
+    this.autoRestart = false,
+    this.maxAlertsPerHour = 6,
+    this.quietStart = '23:00',
+    this.quietEnd = '07:00',
+    this.timezone = 'UTC',
+  });
+
+  final int gate;
+  final bool pushAlerts;
+  final bool verifier;
+  final bool groupLines;
+  final bool autoRestart;
+  final int maxAlertsPerHour;
+  final String? quietStart;
+  final String? quietEnd;
+  final String timezone;
+}
+
+class Overview {
+  const Overview({required this.services, required this.activity});
+
+  final List<RenderService> services;
+  final List<ActivityEntry> activity;
 }
 
 class LogEntry {

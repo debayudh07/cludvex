@@ -1,0 +1,22 @@
+# --- secrets ---------------------------------------------------------------
+.env
+*.env
+!.env.example
+*-service-account*.json
+service-account*.json
+
+# --- python ----------------------------------------------------------------
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+.ruff_cache/
+.mypy_cache/
+
+# --- editors / os ----------------------------------------------------------
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
