@@ -2,15 +2,47 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
+import '../../motion/haptics.dart';
+import '../../services/auth_service.dart';
+import '../../state/app_state.dart';
 import '../../theme/responsive.dart';
 import '../../theme/tokens.dart';
 import '../../widgets/primitives.dart';
 import 'onboarding_flow.dart';
 
-class SignInStep extends StatelessWidget {
-  const SignInStep({super.key, required this.onContinue});
+class SignInStep extends StatefulWidget {
+  const SignInStep({super.key, required this.onSignedIn});
 
-  final VoidCallback onContinue;
+  /// Fired once Firebase reports a session. AuthGate also listens to
+  /// authStateChanges, so this is only a hint for the in-flow animation.
+  final VoidCallback onSignedIn;
+
+  @override
+  State<SignInStep> createState() => _SignInStepState();
+}
+
+class _SignInStepState extends State<SignInStep> {
+  bool _busy = false;
+  String? _error;
+
+  Future<void> _signIn() async {
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      await AppScope.read(context).auth.signInWithGitHub();
+      if (!mounted) return;
+      Haptics.success();
+      widget.onSignedIn();
+    } on AuthFailure catch (e) {
+      if (!mounted) return;
+      Haptics.error();
+      setState(() => _error = e.message);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -39,13 +71,29 @@ class SignInStep extends StatelessWidget {
           label: 'Continue with GitHub',
           icon: Icons.code_rounded,
           inverse: true,
-          onPressed: onContinue,
+          onPressed: _busy ? null : _signIn,
+          child: _busy
+              ? const Row(mainAxisSize: MainAxisSize.min, children: [
+                  SizedBox.square(
+                    dimension: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2.4, color: AppColors.bg),
+                  ),
+                  SizedBox(width: 10),
+                  Text('Opening GitHub'),
+                ])
+              : null,
         ),
         const SizedBox(height: 14),
-        Text(
-          'GitHub is only for sign-in. Render comes next.',
-          textAlign: TextAlign.center,
-          style: t.bodySmall?.copyWith(color: AppColors.textFaint),
+        AnimatedSwitcher(
+          duration: Motion.press,
+          child: Text(
+            _error ?? 'GitHub is only for sign-in. Render comes next.',
+            key: ValueKey(_error),
+            textAlign: TextAlign.center,
+            style: t.bodySmall?.copyWith(
+              color: _error == null ? AppColors.textFaint : AppColors.criticalText,
+            ),
+          ),
         ),
       ],
     );

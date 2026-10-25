@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import '../../data/mock_data.dart';
+import '../../api/log_stream.dart';
 import '../../data/models.dart';
 import '../../motion/haptics.dart';
 import '../../motion/transitions.dart';
@@ -89,8 +89,20 @@ class LiveLogPlayer extends StatelessWidget {
   }
 }
 
-String _serviceLabel(LogFilter f) =>
-    f.serviceId == null ? 'all services' : MockData.service(f.serviceId!).name;
+String _serviceLabel(AppState state, LogFilter f) => f.serviceId == null
+    ? 'all services'
+    : (state.serviceById(f.serviceId!)?.name ?? f.serviceId!);
+
+/// One line of status for the stream, so an empty player never looks broken.
+String _statusLine(AppState state) => switch (state.logStatus) {
+      LogStreamStatus.live =>
+        state.hasLogs ? 'waiting for the next line…' : 'connected · waiting for logs',
+      LogStreamStatus.connecting => 'connecting to the log stream…',
+      LogStreamStatus.retrying => 'reconnecting…',
+      LogStreamStatus.needsSetup => 'connect Render and pick services first',
+      LogStreamStatus.unauthorized => 'session expired · sign in again',
+      LogStreamStatus.idle => 'live tail paused',
+    };
 
 class _MiniBar extends StatelessWidget {
   const _MiniBar({required this.drag, required this.onTap, required this.onClose});
@@ -109,7 +121,7 @@ class _MiniBar extends StatelessWidget {
           child: drag(
             Semantics(
               button: true,
-              label: 'Live logs for ${_serviceLabel(state.logFilter)}. Expand.',
+              label: 'Live logs for ${_serviceLabel(state, state.logFilter)}. Expand.',
               child: InkWell(
                 onTap: onTap,
                 child: Padding(
@@ -133,7 +145,7 @@ class _MiniBar extends StatelessWidget {
                         children: [
                           Row(children: [
                             Flexible(
-                              child: Text(_serviceLabel(state.logFilter),
+                              child: Text(_serviceLabel(state, state.logFilter),
                                   overflow: TextOverflow.ellipsis,
                                   style: AppText.mono(size: 12.5, color: AppColors.text, weight: FontWeight.w600)),
                             ),
@@ -154,11 +166,15 @@ class _MiniBar extends StatelessWidget {
                             layoutBuilder: (current, previous) =>
                                 Stack(alignment: Alignment.centerLeft, children: [?current]),
                             child: Text(
-                              '${MockData.service(newest.serviceId).shortName} · ${newest.message}',
-                              key: ValueKey(newest.index),
+                              newest == null
+                                  ? _statusLine(state)
+                                  : '${state.serviceLabel(newest.serviceId)} · ${newest.message}',
+                              key: ValueKey(newest?.index ?? -1),
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
-                              style: AppText.mono(size: 11, color: newest.level.color),
+                              style: AppText.mono(
+                                  size: 11,
+                                  color: newest?.level.color ?? AppColors.textFaint),
                             ),
                           ),
                         ],
@@ -309,7 +325,8 @@ class _FullView extends StatelessWidget {
               Expanded(
                 child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                   const Text('Live logs', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700, letterSpacing: -0.4)),
-                  Text('${_serviceLabel(state.logFilter)} · ${state.watched.length} watched',
+                  Text('${_serviceLabel(state, state.logFilter)} · '
+                      '${state.watched.length} watched',
                       overflow: TextOverflow.ellipsis, style: AppText.mono(size: 11.5)),
                 ]),
               ),
@@ -360,7 +377,29 @@ class _FullView extends StatelessWidget {
               border: Border.all(color: AppColors.divider),
             ),
             clipBehavior: Clip.antiAlias,
-            child: RepaintBoundary(
+            child: lines.isEmpty
+                ? Center(
+                    child: Padding(
+                      padding: const EdgeInsets.all(24),
+                      child: Column(mainAxisSize: MainAxisSize.min, children: [
+                        if (state.logStatus == LogStreamStatus.connecting ||
+                            state.logStatus == LogStreamStatus.retrying)
+                          const SizedBox.square(
+                            dimension: 18,
+                            child: CircularProgressIndicator(
+                                strokeWidth: 2.2, color: AppColors.textFaint),
+                          )
+                        else
+                          const Icon(Icons.terminal_rounded,
+                              size: 24, color: AppColors.textGhost),
+                        const SizedBox(height: 12),
+                        Text(_statusLine(state),
+                            textAlign: TextAlign.center,
+                            style: AppText.mono(size: 11.5, color: AppColors.textFaint)),
+                      ]),
+                    ),
+                  )
+                : RepaintBoundary(
               child: ListView.custom(
                 reverse: true,
                 padding: const EdgeInsets.symmetric(vertical: 8),
@@ -422,6 +461,7 @@ class _LogRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final serviceName = AppScope.of(context).serviceLabel(entry.serviceId);
     final err = entry.level == LogLevel.err;
     final base = AppText.mono(size: 11.5, color: err ? AppColors.text : const Color(0xFFB4B9C7), height: 1.45);
     return Container(
@@ -434,7 +474,7 @@ class _LogRow extends StatelessWidget {
         TextSpan(text: '${entry.time}  ', style: base.copyWith(color: AppColors.textGhost)),
         TextSpan(text: '${entry.level.label}  ',
             style: base.copyWith(color: entry.level.color, fontWeight: FontWeight.w600)),
-        TextSpan(text: '${MockData.service(entry.serviceId).shortName} · ', style: base.copyWith(color: AppColors.textFaint)),
+        TextSpan(text: '$serviceName · ', style: base.copyWith(color: AppColors.textFaint)),
         TextSpan(text: entry.message),
       ])),
     );

@@ -4,7 +4,9 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../../api/api_client.dart';
 import '../../motion/haptics.dart';
+import '../../state/app_state.dart';
 import '../../theme/app_theme.dart';
 import '../../theme/tokens.dart';
 import '../../widgets/primitives.dart';
@@ -28,6 +30,8 @@ class _ApiKeyStepState extends State<ApiKeyStep> with SingleTickerProviderStateM
       AnimationController(vsync: this, duration: const Duration(milliseconds: 380));
   _KeyState _state = _KeyState.idle;
   bool _invalid = false;
+  String? _serverError;
+  int _found = 0;
   Timer? _timer;
 
   static final _pattern = RegExp(r'^rnd_[A-Za-z0-9]{8,}$');
@@ -50,34 +54,68 @@ class _ApiKeyStepState extends State<ApiKeyStep> with SingleTickerProviderStateM
   Future<void> _paste() async {
     final data = await Clipboard.getData(Clipboard.kTextPlain);
     final text = data?.text?.trim();
-    // Demo fallback so the flow works without a real key on the clipboard.
-    _controller.text = (text != null && text.isNotEmpty) ? text : 'rnd_8fK2mQx7Q2pLw9';
-    setState(() => _invalid = false);
+    if (text == null || text.isEmpty) {
+      setState(() => _serverError = 'Nothing on the clipboard to paste.');
+      return;
+    }
+    _controller.text = text;
+    setState(() {
+      _invalid = false;
+      _serverError = null;
+    });
   }
 
-  void _submit() {
+  void _fail(String message) {
+    if (!mounted) return;
+    setState(() {
+      _state = _KeyState.idle;
+      _serverError = message;
+    });
+    _shake.forward(from: 0);
+    Haptics.error();
+  }
+
+  Future<void> _submit() async {
     FocusScope.of(context).unfocus();
-    if (!_pattern.hasMatch(_controller.text.trim())) {
-      setState(() => _invalid = true);
+    final key = _controller.text.trim();
+    if (!_pattern.hasMatch(key)) {
+      setState(() {
+        _invalid = true;
+        _serverError = null;
+      });
       _shake.forward(from: 0);
       Haptics.error();
       return;
     }
     setState(() {
       _invalid = false;
+      _serverError = null;
       _state = _KeyState.checking;
     });
-    // TODO: POST the key to the backend, which validates it with Render.
-    _timer = Timer(const Duration(milliseconds: 1100), () {
+
+    // The backend validates the key against Render, encrypts it and lists the
+    // workspaces' services; the phone never stores it.
+    final state = AppScope.read(context);
+    try {
+      final services = await state.connectRender(key);
       if (!mounted) return;
-      setState(() => _state = _KeyState.connected);
+      setState(() {
+        _found = services.length;
+        _state = _KeyState.connected;
+      });
       Haptics.success();
-      _timer = Timer(const Duration(milliseconds: 650), widget.onConnected);
-    });
+      _timer = Timer(const Duration(milliseconds: 650), () {
+        if (mounted) widget.onConnected();
+      });
+    } on ApiException catch (e) {
+      _fail(e.message);
+    } catch (e) {
+      _fail('Something went wrong connecting Render.');
+    }
   }
 
   Color get _borderColor {
-    if (_invalid) return AppColors.critical;
+    if (_invalid || _serverError != null) return AppColors.critical;
     if (_state == _KeyState.connected) return AppColors.ok;
     if (_focus.hasFocus) return AppColors.accent;
     return AppColors.outline;
@@ -88,10 +126,12 @@ class _ApiKeyStepState extends State<ApiKeyStep> with SingleTickerProviderStateM
     final t = Theme.of(context).textTheme;
     final help = _invalid
         ? "That doesn't look like a Render key. It starts with rnd_."
-        : _state == _KeyState.connected
-            ? 'Key works. Found 5 services.'
-            : 'Tip: copy it in Render, then tap Paste.';
-    final helpColor = _invalid
+        : _serverError != null
+            ? _serverError!
+            : _state == _KeyState.connected
+                ? 'Key works. Found $_found service${_found == 1 ? '' : 's'}.'
+                : 'Tip: copy it in Render, then tap Paste.';
+    final helpColor = _invalid || _serverError != null
         ? AppColors.criticalText
         : _state == _KeyState.connected
             ? AppColors.okText
@@ -135,7 +175,12 @@ class _ApiKeyStepState extends State<ApiKeyStep> with SingleTickerProviderStateM
                   textInputAction: TextInputAction.done,
                   onSubmitted: (_) => _submit(),
                   onChanged: (_) {
-                    if (_invalid) setState(() => _invalid = false);
+                    if (_invalid || _serverError != null) {
+                      setState(() {
+                        _invalid = false;
+                        _serverError = null;
+                      });
+                    }
                   },
                   style: AppText.mono(size: 15, color: AppColors.text),
                   decoration: const InputDecoration(
@@ -161,7 +206,7 @@ class _ApiKeyStepState extends State<ApiKeyStep> with SingleTickerProviderStateM
         AnimatedDefaultTextStyle(
           duration: Motion.press,
           style: TextStyle(fontSize: 13, color: helpColor),
-          child: Text(help),
+          child: Text(help, key: ValueKey(help)),
         ),
       ],
       footer: [
@@ -185,7 +230,7 @@ class _ApiKeyStepState extends State<ApiKeyStep> with SingleTickerProviderStateM
         const SizedBox(height: 16),
         PrimaryButton(
           label: 'Connect',
-          onPressed: _state == _KeyState.idle ? _submit : () {},
+          onPressed: _state == _KeyState.idle ? _submit : null,
           child: AnimatedSwitcher(
             duration: Motion.press,
             transitionBuilder: (child, a) => FadeTransition(

@@ -6,6 +6,7 @@ import '../../theme/app_theme.dart';
 import '../../theme/responsive.dart';
 import '../../theme/tokens.dart';
 import '../../widgets/confirm_sheet.dart';
+import '../onboarding/onboarding_flow.dart';
 import '../../widgets/primitives.dart';
 
 /// What the agent may do on its own, grouped by risk. Riskier powers stay
@@ -22,7 +23,24 @@ class MandateScreen extends StatefulWidget {
 class _MandateScreenState extends State<MandateScreen> {
   bool _restartOpen = false;
 
+  @override
+  void initState() {
+    super.initState();
+    // The shell loads this at bootstrap; refetch so a change made on another
+    // device shows up.
+    WidgetsBinding.instance
+        .addPostFrameCallback((_) => AppScope.read(context).refreshMandate());
+  }
+
+  void _setRestart(AppState state, bool on) {
+    state.editMandate(state.mandate.copyWith(autoRestart: on), immediate: true);
+  }
+
   Future<void> _grantRestart(AppState state) async {
+    if (!state.actionsEnabled) {
+      state.showToast('This server runs notify-only (ACTIONS_ENABLED is off)');
+      return;
+    }
     final ok = await showConfirmSheet(
       context,
       title: 'Let the agent restart services?',
@@ -35,13 +53,43 @@ class _MandateScreenState extends State<MandateScreen> {
       heavy: true,
     );
     if (!ok || !mounted) return;
-    state.update(() => state.autoRestart = true);
-    state.showToast('Mandate updated', onUndo: () => state.update(() => state.autoRestart = false));
+    _setRestart(state, true);
+    state.showToast('Mandate updated', onUndo: () => _setRestart(state, false));
   }
 
   void _revokeRestart(AppState state) {
-    state.update(() => state.autoRestart = false);
-    state.showToast('Back to asking every time', onUndo: () => state.update(() => state.autoRestart = true));
+    _setRestart(state, false);
+    state.showToast('Back to asking every time', onUndo: () => _grantRestart(state));
+  }
+
+  Future<void> _disconnectRender(AppState state) async {
+    final ok = await showConfirmSheet(
+      context,
+      title: 'Remove the Render key?',
+      body: 'The agent stops watching every service straight away. '
+          'You can paste a new key any time.',
+      points: const ['Alerts already raised stay in your history'],
+      confirmLabel: 'Remove key',
+      icon: Icons.key_off_rounded,
+      tone: AppColors.criticalText,
+      heavy: true,
+    );
+    if (!ok || !mounted) return;
+    try {
+      await state.repo.disconnectRender();
+      if (!mounted) return;
+      // Still signed in, just without Render: send them back to the key step
+      // rather than all the way out.
+      await state.bootstrap();
+      if (!mounted) return;
+      Navigator.of(context).pushAndRemoveUntil(
+        MaterialPageRoute(
+            builder: (_) => const OnboardingFlow(start: OnboardingStep.apiKey)),
+        (route) => false,
+      );
+    } catch (e) {
+      if (mounted) state.showToast('$e');
+    }
   }
 
   @override
@@ -90,19 +138,22 @@ class _MandateScreenState extends State<MandateScreen> {
                 title: 'Push alerts',
                 subtitle: 'Serious issues only, via FCM',
                 value: state.pushAlerts,
-                onChanged: (v) => state.update(() => state.pushAlerts = v),
+                onChanged: (v) =>
+                    state.editMandate(state.mandate.copyWith(pushAlerts: v), immediate: true),
               ),
               _SwitchRow(
                 title: 'Verifier agent',
                 subtitle: 'A second pass tries to disprove each diagnosis',
                 value: state.verifier,
-                onChanged: (v) => state.update(() => state.verifier = v),
+                onChanged: (v) =>
+                    state.editMandate(state.mandate.copyWith(verifier: v), immediate: true),
               ),
               _SwitchRow(
                 title: 'Group repeated lines',
                 subtitle: 'Same error, one alert',
                 value: state.groupLines,
-                onChanged: (v) => state.update(() => state.groupLines = v),
+                onChanged: (v) =>
+                    state.editMandate(state.mandate.copyWith(groupLines: v), immediate: true),
               ),
             ]),
 
@@ -115,7 +166,11 @@ class _MandateScreenState extends State<MandateScreen> {
                 },
                 child: _Row(
                   title: 'Restart a service',
-                  subtitle: state.autoRestart ? 'Agent may restart above ${state.gate}%' : 'Asks you every time',
+                  subtitle: !state.actionsEnabled
+                      ? 'Notify-only on this server'
+                      : state.autoRestart
+                          ? 'Agent may restart above ${state.gate}%'
+                          : 'Asks you every time',
                   trailing: AnimatedRotation(
                     turns: _restartOpen ? 0.5 : 0,
                     duration: Motion.tab,
@@ -136,7 +191,9 @@ class _MandateScreenState extends State<MandateScreen> {
                           Text(
                             "The agent could restart a crash-looping service on its own when it's "
                             'above ${state.gate}% sure and the verifier agrees. Each restart is '
-                            'logged with its evidence.',
+                            'logged with its evidence.'
+                            '${state.actionsEnabled ? '' : ' This server is running notify-only, '
+                                'so the power cannot be granted yet.'}',
                             style: const TextStyle(fontSize: 13.5, height: 1.5, color: Color(0xFFB4B9C7)),
                           ),
                           const SizedBox(height: 12),
@@ -152,7 +209,8 @@ class _MandateScreenState extends State<MandateScreen> {
                                   child: const Text('Ask me every time again'),
                                 )
                               : OutlinedButton(
-                                  onPressed: () => _grantRestart(state),
+                                  onPressed:
+                                      state.actionsEnabled ? () => _grantRestart(state) : null,
                                   style: OutlinedButton.styleFrom(
                                     minimumSize: const Size.fromHeight(48),
                                     foregroundColor: const Color(0xFFE2BE6E),
@@ -197,6 +255,8 @@ class _MandateScreenState extends State<MandateScreen> {
                   if (v.round() != state.gate) Haptics.selection();
                   state.setGate(v.round());
                 },
+                onChangeEnd: (v) =>
+                    state.editMandate(state.mandate.copyWith(gate: v.round()), immediate: true),
               ),
               const Padding(
                 padding: EdgeInsets.fromLTRB(16, 0, 16, 16),
@@ -205,14 +265,60 @@ class _MandateScreenState extends State<MandateScreen> {
               ),
             ]),
 
+            const SectionLabel('Noise limit'),
+            _Card(children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+                child: Row(children: [
+                  const Expanded(
+                    child: Text('At most, per hour',
+                        style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
+                  ),
+                  Text('${state.mandate.maxAlertsPerHour}',
+                      style: const TextStyle(
+                          fontSize: 22, fontWeight: FontWeight.w700, color: AppColors.accentText)),
+                ]),
+              ),
+              Slider(
+                value: state.mandate.maxAlertsPerHour.toDouble(),
+                min: 1,
+                max: 20,
+                divisions: 19,
+                label: '${state.mandate.maxAlertsPerHour}',
+                onChanged: (v) {
+                  if (v.round() != state.mandate.maxAlertsPerHour) Haptics.selection();
+                  state.editMandate(state.mandate.copyWith(maxAlertsPerHour: v.round()));
+                },
+                onChangeEnd: (v) => state.editMandate(
+                    state.mandate.copyWith(maxAlertsPerHour: v.round()),
+                    immediate: true),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                child: Text(
+                  'Beyond this the agent holds alerts back and notes it in Activity.'
+                  '${state.mandate.quietStart != null && state.mandate.quietEnd != null ? ' '
+                      'Quiet hours ${state.mandate.quietStart}–${state.mandate.quietEnd} '
+                      '(${state.mandate.timezone}); critical still gets through.' : ''}',
+                  style: const TextStyle(fontSize: 12.5, color: AppColors.textMuted),
+                ),
+              ),
+            ]),
+
             const SectionLabel('Render'),
             _Card(children: [
               _Row(
-                title: 'rnd_••••x7Q2',
+                title: state.me?.keyLast4 != null
+                    ? 'rnd_••••${state.me!.keyLast4}'
+                    : 'No key connected',
                 titleStyle: AppText.mono(size: 14, color: AppColors.text),
-                subtitle: 'Encrypted on our backend · added 23 Oct',
+                subtitle: state.me?.renderConnected == true
+                    ? 'Encrypted on the backend · never on this phone'
+                    : 'Paste a Render key to start watching',
                 trailing: OutlinedButton(
-                  onPressed: () {},
+                  onPressed: state.me?.renderConnected == true
+                      ? () => _disconnectRender(state)
+                      : null,
                   style: OutlinedButton.styleFrom(
                     foregroundColor: AppColors.criticalText,
                     side: BorderSide(color: AppColors.critical.withValues(alpha: 0.4)),

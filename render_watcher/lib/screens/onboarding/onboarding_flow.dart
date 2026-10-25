@@ -12,29 +12,38 @@ import 'done_step.dart';
 import 'pick_services_step.dart';
 import 'sign_in_step.dart';
 
+enum OnboardingStep { signIn, apiKey, pickServices, done }
+
 /// Sign in → API key → pick services → done, as one shared-axis journey.
-/// Each step asks exactly one thing.
+/// Each step asks exactly one thing. [start] lets a returning account skip
+/// the steps it has already finished.
 class OnboardingFlow extends StatefulWidget {
-  const OnboardingFlow({super.key});
+  const OnboardingFlow({super.key, this.start = OnboardingStep.signIn});
+
+  final OnboardingStep start;
 
   @override
   State<OnboardingFlow> createState() => _OnboardingFlowState();
 }
 
 class _OnboardingFlowState extends State<OnboardingFlow> {
-  int _step = 0;
+  late OnboardingStep _step = widget.start;
   bool _forward = true;
-  Set<String> _picked = {'billing', 'api'};
+  Set<String> _picked = {};
 
-  void _go(int step) {
+  void _go(OnboardingStep step) {
     setState(() {
-      _forward = step > _step;
+      _forward = step.index > _step.index;
       _step = step;
     });
   }
 
-  void _finish() {
-    AppScope.read(context).setWatched(_picked);
+  Future<void> _finish() async {
+    final state = AppScope.read(context);
+    // Watched services were saved by the picker; pull the first real payload
+    // before the dashboard paints so it never flashes empty.
+    await state.bootstrap();
+    if (!mounted) return;
     Navigator.of(context).pushReplacement(PageRouteBuilder(
       transitionDuration: Motion.transform,
       pageBuilder: (_, _, _) => const HomeShell(),
@@ -46,30 +55,39 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
   }
 
   Widget _stepView() => switch (_step) {
-        0 => SignInStep(key: const ValueKey(0), onContinue: () => _go(1)),
-        1 => ApiKeyStep(key: const ValueKey(1), onConnected: () => _go(2)),
-        2 => PickServicesStep(
+        OnboardingStep.signIn => SignInStep(
+            key: const ValueKey(0),
+            // AuthGate reacts to the Firebase session and routes onward, so
+            // the step only has to report that it is no longer needed.
+            onSignedIn: () => _go(OnboardingStep.apiKey),
+          ),
+        OnboardingStep.apiKey => ApiKeyStep(
+            key: const ValueKey(1),
+            onConnected: () => _go(OnboardingStep.pickServices),
+          ),
+        OnboardingStep.pickServices => PickServicesStep(
             key: const ValueKey(2),
             initial: _picked,
             onDone: (ids) {
               _picked = ids;
-              _go(3);
+              _go(OnboardingStep.done);
             },
           ),
-        _ => DoneStep(
+        OnboardingStep.done => DoneStep(
             key: const ValueKey(3),
-            count: _picked.length,
+            count: _picked.isEmpty ? AppScope.read(context).watched.length : _picked.length,
             onOpen: _finish,
           ),
       };
 
   @override
   Widget build(BuildContext context) {
-    final canBack = _step == 1 || _step == 2;
+    // Only steps the user can meaningfully return to from here.
+    final canBack = _step == OnboardingStep.pickServices && widget.start.index < _step.index;
     return PopScope(
       canPop: !canBack,
       onPopInvokedWithResult: (didPop, _) {
-        if (!didPop && canBack) _go(_step - 1);
+        if (!didPop && canBack) _go(OnboardingStep.apiKey);
       },
       child: AnnotatedRegion<SystemUiOverlayStyle>(
         value: SystemUiOverlayStyle.light,
@@ -91,12 +109,12 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
                           child: CircleIconButton(
                             icon: Icons.arrow_back_rounded,
                             tooltip: 'Back',
-                            onTap: () => _go(_step - 1),
+                            onTap: () => _go(OnboardingStep.apiKey),
                           ),
                         ),
                       ),
                       const SizedBox(width: 12),
-                      Expanded(child: _Progress(step: _step)),
+                      Expanded(child: _Progress(step: _step.index)),
                       const SizedBox(width: 12),
                     ]),
                   ),

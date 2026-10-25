@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
-import '../../data/mock_data.dart';
 import '../../data/models.dart';
+import '../../state/app_state.dart';
 import '../../theme/tokens.dart';
 import '../../widgets/primitives.dart';
 
@@ -16,7 +16,9 @@ class IncomingBanner extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final service = MockData.service(alert.serviceId);
+    final name = alert.serviceName ??
+        AppScope.of(context).serviceById(alert.serviceId)?.name ??
+        alert.serviceId;
     return Dismissible(
       key: const ValueKey('banner'),
       direction: DismissDirection.up,
@@ -31,7 +33,7 @@ class IncomingBanner extends StatelessWidget {
           onTap: onTap,
           color: AppColors.surface2,
           borderRadius: BorderRadius.circular(Radii.panel),
-          semanticLabel: '${alert.severity.label} alert on ${service.name}: ${alert.title}. Open.',
+          semanticLabel: '${alert.severity.label} alert on $name: ${alert.title}. Open.',
           child: Container(
             padding: const EdgeInsets.fromLTRB(10, 12, 14, 12),
             decoration: BoxDecoration(
@@ -43,16 +45,19 @@ class IncomingBanner extends StatelessWidget {
               const SizedBox(width: 8),
               Expanded(
                 child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Text('${alert.severity.label} · ${service.name}',
+                  Text('${alert.severity.label} · $name',
                       style: TextStyle(
                           fontSize: 12, fontWeight: FontWeight.w700, letterSpacing: 0.5, color: alert.severity.text)),
                   const SizedBox(height: 3),
-                  Text('Crash loop, likely OOM from v2.14.0',
+                  Text(alert.headline.isEmpty ? alert.title : alert.headline,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(fontSize: 14.5, fontWeight: FontWeight.w600)),
                   const SizedBox(height: 2),
-                  Text('Agent ${(alert.confidence * 100).round()}% sure · verifier agrees · now',
+                  Text(
+                      'Agent ${(alert.confidence * 100).round()}% sure'
+                      '${alert.verified ? ' · verifier agrees' : ''}'
+                      ' · ${alert.timeAgoLabel}',
                       style: const TextStyle(fontSize: 12.5, color: AppColors.textMuted)),
                 ]),
               ),

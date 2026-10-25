@@ -1,28 +1,63 @@
 import 'package:flutter/material.dart';
 
-import '../../data/mock_data.dart';
 import '../../data/models.dart';
 import '../../motion/transitions.dart';
+import '../../state/app_state.dart';
 import '../../theme/app_theme.dart';
 import '../../theme/responsive.dart';
 import '../../theme/tokens.dart';
+import '../../widgets/primitives.dart';
 import '../shell/home_shell.dart';
 
 /// Audit log as one timeline, like Uber's Activity hub: every observation,
 /// decision and action with the evidence behind it.
-class ActivityScreen extends StatelessWidget {
+class ActivityScreen extends StatefulWidget {
   const ActivityScreen({super.key, required this.bottomInset, required this.onChromeHidden});
 
   final double bottomInset;
   final ValueChanged<bool> onChromeHidden;
 
   @override
+  State<ActivityScreen> createState() => _ActivityScreenState();
+}
+
+class _ActivityScreenState extends State<ActivityScreen> {
+  final _scroll = ScrollController();
+
+  @override
+  void initState() {
+    super.initState();
+    _scroll.addListener(_maybeLoadMore);
+    WidgetsBinding.instance
+        .addPostFrameCallback((_) => AppScope.read(context).refreshActivity());
+  }
+
+  @override
+  void dispose() {
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  /// `GET /activity` pages with a `before` timestamp cursor.
+  void _maybeLoadMore() {
+    if (!_scroll.hasClients) return;
+    final left = _scroll.position.maxScrollExtent - _scroll.position.pixels;
+    if (left < 600) AppScope.read(context).loadMoreActivity();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final g = context.gutter;
-    const entries = MockData.activity;
+    final state = AppScope.of(context);
+    final entries = state.activity;
+    final loading = state.activityLoading && entries.isEmpty;
     return NotificationListener<UserScrollNotification>(
-      onNotification: (n) => handleChromeScroll(n, onChromeHidden),
-      child: CustomScrollView(slivers: [
+      onNotification: (n) => handleChromeScroll(n, widget.onChromeHidden),
+      child: RefreshIndicator(
+        onRefresh: state.refreshActivity,
+        backgroundColor: AppColors.surface2,
+        color: AppColors.accentText,
+        child: CustomScrollView(controller: _scroll, slivers: [
         SliverAppBar(
           floating: true,
           snap: true,
@@ -34,11 +69,11 @@ class ActivityScreen extends StatelessWidget {
           actions: [
             Padding(
               padding: EdgeInsets.only(right: g - 8),
-              child: TextButton.icon(
-                onPressed: () {},
-                icon: const Icon(Icons.ios_share_rounded, size: 16),
-                label: const Text('Export'),
-                style: TextButton.styleFrom(foregroundColor: AppColors.textSecondary),
+              child: IconButton(
+                onPressed: state.refreshActivity,
+                icon: const Icon(Icons.refresh_rounded, size: 20),
+                tooltip: 'Refresh',
+                color: AppColors.textSecondary,
               ),
             ),
           ],
@@ -55,15 +90,73 @@ class ActivityScreen extends StatelessWidget {
           ),
         ),
         SliverPadding(
-          padding: centeredSliverPadding(context, top: 12, bottom: bottomInset),
-          sliver: SliverList.builder(
-            itemCount: entries.length,
-            itemBuilder: (context, i) {
-              final row = _TimelineRow(entry: entries[i], last: i == entries.length - 1);
-              // Only the first screenful staggers in; later rows just appear.
-              return i < 7 ? FadeSlideIn(delay: Duration(milliseconds: 45 * i), child: row) : row;
-            },
-          ),
+          padding: centeredSliverPadding(context, top: 12, bottom: widget.bottomInset),
+          sliver: loading
+              ? const SliverToBoxAdapter(
+                  child: Skeleton(
+                    child: Column(children: [
+                      RowSkeleton(leading: 36, widthFactor: 0.6),
+                      RowSkeleton(leading: 36, widthFactor: 0.45),
+                      RowSkeleton(leading: 36, widthFactor: 0.52),
+                      RowSkeleton(leading: 36, widthFactor: 0.4),
+                    ]),
+                  ),
+                )
+              : entries.isEmpty
+                  ? SliverToBoxAdapter(child: _EmptyActivity(error: state.activityError))
+                  : SliverList.builder(
+                      itemCount: entries.length + (state.activityHasMore ? 1 : 0),
+                      itemBuilder: (context, i) {
+                        if (i >= entries.length) {
+                          return const Padding(
+                            padding: EdgeInsets.symmetric(vertical: 24),
+                            child: Center(
+                              child: SizedBox.square(
+                                dimension: 20,
+                                child: CircularProgressIndicator(
+                                    strokeWidth: 2.2, color: AppColors.textFaint),
+                              ),
+                            ),
+                          );
+                        }
+                        final row = _TimelineRow(
+                          entry: entries[i],
+                          last: i == entries.length - 1 && !state.activityHasMore,
+                        );
+                        // Only the first screenful staggers in.
+                        return i < 7
+                            ? FadeSlideIn(delay: Duration(milliseconds: 45 * i), child: row)
+                            : row;
+                      },
+                    ),
+        ),
+      ]),
+      ),
+    );
+  }
+}
+
+class _EmptyActivity extends StatelessWidget {
+  const _EmptyActivity({this.error});
+
+  final String? error;
+
+  @override
+  Widget build(BuildContext context) {
+    final failed = error != null;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 64),
+      child: Column(children: [
+        Icon(failed ? Icons.cloud_off_rounded : Icons.history_rounded,
+            size: 32, color: AppColors.textFaint),
+        const SizedBox(height: 12),
+        Text(failed ? "Couldn't load activity" : 'Nothing logged yet',
+            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+        const SizedBox(height: 6),
+        Text(
+          error ?? 'Every observation, decision and action will appear here.',
+          textAlign: TextAlign.center,
+          style: const TextStyle(color: AppColors.textMuted),
         ),
       ]),
     );

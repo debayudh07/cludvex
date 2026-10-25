@@ -1,8 +1,17 @@
-# Local dev: API + watcher against the Firestore emulator.
-# Production: drop the emulator, unset FIRESTORE_EMULATOR_HOST and provide
-# FIREBASE_SERVICE_ACCOUNT_JSON. Run the watcher somewhere other than Render.
+# Default: API + watcher against **cloud** Firestore, using the service
+# account in .env. Data survives restarts and the collection-group index is
+# enforced the same way production enforces it.
+#
+# Offline / zero-quota alternative — run the emulator instead:
+#   docker compose --profile emulator up
+#   (with FIRESTORE_EMULATOR_HOST=firestore:8081 set in .env)
+#
+# The watcher is deliberately a separate process: run it somewhere other than
+# Render so it survives a Render outage.
 services:
   firestore:
+    # Only started by `--profile emulator`; cloud is the default.
+    profiles: ["emulator"]
     image: gcr.io/google.com/cloudsdktool/google-cloud-cli:emulators
     command: gcloud emulators firestore start --host-port=0.0.0.0:8081 --project=${FIREBASE_PROJECT_ID:-render-watcher-dev}
     ports: ["8081:8081"]
@@ -10,16 +19,13 @@ services:
   api:
     build: .
     env_file: .env
-    environment:
-      FIRESTORE_EMULATOR_HOST: firestore:8081
-    ports: ["8080:8080"]
-    depends_on: [firestore]
+    # Host port is overridable: 8080 is often already taken on Windows
+    # (MiniTool ShadowMaker's agent service binds it). The container still
+    # listens on 8080, so nothing inside changes.
+    ports: ["${API_PORT:-8090}:8080"]
 
   watcher:
     build: .
     command: ["python", "-m", "app.watcher"]
     env_file: .env
-    environment:
-      FIRESTORE_EMULATOR_HOST: firestore:8081
-    depends_on: [firestore]
     restart: unless-stopped

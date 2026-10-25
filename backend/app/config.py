@@ -19,15 +19,20 @@ class Settings(BaseSettings):
 
     # Gemini
     gemini_api_key: str
-    triage_model: str = "gemini-flash-latest"
-    verifier_model: str = "gemini-pro-latest"
+    # Pinned rather than the *-latest aliases: both calls use a response_schema,
+    # and an alias silently moving to a new model can change structured output.
+    triage_model: str = "gemini-3.8-flash"
+    verifier_model: str = "gemini-3.8-flash"
 
     render_api_base: str = "https://api.render.com/v1"
 
     # v1 is notify-only. Restart exists but is refused unless this is true.
     actions_enabled: bool = False
 
-    watch_poll_seconds: int = 15
+    # 15s against cloud Firestore exceeds the free tier at 2+ watched
+    # services (~5 reads + 2 writes per service per cycle). 60s keeps
+    # 3 services near 21k reads / 9k writes a day.
+    watch_poll_seconds: int = 60
     group_window_seconds: int = 600
     resolve_after_minutes: int = 30
     max_watched_services: int = 3

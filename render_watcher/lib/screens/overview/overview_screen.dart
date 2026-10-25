@@ -1,9 +1,7 @@
-import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
-import '../../data/mock_data.dart';
 import '../../data/models.dart';
 import '../../motion/haptics.dart';
 import '../../motion/transitions.dart';
@@ -39,21 +37,18 @@ class _OverviewScreenState extends State<OverviewScreen> {
   final _sheet = DraggableScrollableController();
   final _extent = ValueNotifier<double>(0.5);
   double? _lastSnap;
-  bool _loading = true;
-  Timer? _timer;
 
   @override
   void initState() {
     super.initState();
-    // TODO: replace with the first backend fetch of service health.
-    _timer = Timer(const Duration(milliseconds: 1400), () {
-      if (mounted) setState(() => _loading = false);
+    // The shell loads this at bootstrap; refetch so a cold resume is current.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) AppScope.read(context).refreshOverview();
     });
   }
 
   @override
   void dispose() {
-    _timer?.cancel();
     _sheet.dispose();
     _extent.dispose();
     super.dispose();
@@ -63,6 +58,7 @@ class _OverviewScreenState extends State<OverviewScreen> {
   Widget build(BuildContext context) {
     final state = AppScope.of(context);
     final services = state.watchedServices;
+    final loading = state.overviewLoading && services.isEmpty;
     final wide = context.screen.width >= 700;
 
     final header = _Header(
@@ -73,7 +69,7 @@ class _OverviewScreenState extends State<OverviewScreen> {
 
     final content = _SheetContent(
       services: services,
-      loading: _loading,
+      loading: loading,
       state: state,
       onOpenLogs: widget.onOpenLogs,
       onOpenMandate: widget.onOpenMandate,
@@ -186,6 +182,14 @@ class _OverviewScreenState extends State<OverviewScreen> {
   }
 }
 
+/// Two letters for the account chip, from the GitHub login or email.
+String _initialsFor(Me? me) {
+  final source = me?.githubLogin ?? me?.email ?? '';
+  final letters = source.replaceAll(RegExp(r'[^A-Za-z]'), '');
+  if (letters.isEmpty) return 'RW';
+  return letters.substring(0, letters.length >= 2 ? 2 : 1).toUpperCase();
+}
+
 class _Header extends StatelessWidget {
   const _Header({required this.services, required this.onReplayBanner, required this.onOpenMandate});
 
@@ -196,13 +200,19 @@ class _Header extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final t = Theme.of(context).textTheme;
+    final initials = _initialsFor(AppScope.of(context).me);
     final down = services.where((s) => s.health == ServiceHealth.down).toList();
-    final headline = down.isEmpty
-        ? 'All services healthy'
-        : '${down.length} service${down.length == 1 ? ' is' : 's are'} down';
-    final sub = down.isEmpty
-        ? 'The agent is watching ${services.length} services'
-        : '${down.first.name} needs you · ${services.length - down.length} others look fine';
+    final headline = services.isEmpty
+        ? 'Nothing watched yet'
+        : down.isEmpty
+            ? 'All services healthy'
+            : '${down.length} service${down.length == 1 ? ' is' : 's are'} down';
+    final sub = services.isEmpty
+        ? 'Pick the services the agent should watch'
+        : down.isEmpty
+            ? 'The agent is watching ${services.length} '
+                'service${services.length == 1 ? '' : 's'}'
+            : '${down.first.name} needs you · ${services.length - down.length} others look fine';
 
     return Padding(
       padding: EdgeInsets.fromLTRB(context.gutter, 8, context.gutter, 0),
@@ -248,10 +258,11 @@ class _Header extends StatelessWidget {
                 semanticLabel: 'Mandate and account',
                 color: AppColors.surface2,
                 borderRadius: BorderRadius.circular(40),
-                child: const SizedBox.square(
+                child: SizedBox.square(
                   dimension: 40,
                   child: Center(
-                    child: Text('DB', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700)),
+                    child: Text(initials,
+                        style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700)),
                   ),
                 ),
               ),
@@ -329,28 +340,53 @@ class _SheetContent {
         padding: EdgeInsets.symmetric(horizontal: g),
         sliver: SliverList.list(children: [
           SectionLabel('Watched',
-              trailing: Text('Edit',
-                  style: TextStyle(color: AppColors.accentText, fontSize: 13, fontWeight: FontWeight.w600))),
+              trailing: Pressable(
+                onTap: onOpenMandate,
+                borderRadius: BorderRadius.circular(Radii.pill),
+                child: const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  child: Text('Edit',
+                      style: TextStyle(
+                          color: AppColors.accentText,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600)),
+                ),
+              )),
           AnimatedSwitcher(
             duration: Motion.tab,
             switchInCurve: Motion.decelerate,
             child: loading
-                ? Skeleton(
-                    key: const ValueKey('skel'),
-                    child: Column(children: [for (final _ in services) const RowSkeleton()]),
+                ? const Skeleton(
+                    key: ValueKey('skel'),
+                    child: Column(children: [RowSkeleton(), RowSkeleton(), RowSkeleton()]),
                   )
-                : Column(key: const ValueKey('rows'), children: [
-                    for (var i = 0; i < services.length; i++)
-                      FadeSlideIn(
-                        delay: Duration(milliseconds: 40 * i),
-                        offset: 8,
-                        child: _ServiceRow(
-                          service: services[i],
-                          last: i == services.length - 1,
-                          onTap: () => onOpenLogs(services[i].id),
+                : services.isEmpty
+                    ? Padding(
+                        key: const ValueKey('empty'),
+                        padding: const EdgeInsets.symmetric(vertical: 10),
+                        child: Text(
+                          state.overviewError ??
+                              'No services watched. Open Mandate to pick some.',
+                          style: TextStyle(
+                            fontSize: 13.5,
+                            color: state.overviewError != null
+                                ? AppColors.criticalText
+                                : AppColors.textMuted,
+                          ),
                         ),
-                      ),
-                  ]),
+                      )
+                    : Column(key: const ValueKey('rows'), children: [
+                        for (var i = 0; i < services.length; i++)
+                          FadeSlideIn(
+                            delay: Duration(milliseconds: 40 * i),
+                            offset: 8,
+                            child: _ServiceRow(
+                              service: services[i],
+                              last: i == services.length - 1,
+                              onTap: () => onOpenLogs(services[i].id),
+                            ),
+                          ),
+                      ]),
           ),
           const SizedBox(height: 18),
           Pressable(
@@ -372,10 +408,15 @@ class _SheetContent {
                 const SizedBox(width: 12),
                 Expanded(
                   child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    Text(state.autoRestart ? 'Notify + auto-restart' : 'Notify-only mode',
+                    Text(
+                        state.autoRestart && state.actionsEnabled
+                            ? 'Notify + auto-restart'
+                            : 'Notify-only mode',
                         style: const TextStyle(fontSize: 14.5, fontWeight: FontWeight.w600)),
                     const SizedBox(height: 2),
-                    Text('Gate ${state.gate}% · verifier ${state.verifier ? 'on' : 'off'} · 6 alerts/h max',
+                    Text(
+                        'Gate ${state.gate}% · verifier ${state.verifier ? 'on' : 'off'} · '
+                        '${state.mandate.maxAlertsPerHour} alerts/h max',
                         style: const TextStyle(fontSize: 12.5, color: AppColors.textMuted)),
                   ]),
                 ),
@@ -384,7 +425,16 @@ class _SheetContent {
             ),
           ),
           const SectionLabel('Today'),
-          for (final e in MockData.activity.take(3)) _TodayRow(entry: e),
+          if (state.recentActivity.isEmpty)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Text(
+                loading ? 'Loading…' : 'Nothing yet today.',
+                style: const TextStyle(fontSize: 13, color: AppColors.textMuted),
+              ),
+            )
+          else
+            for (final e in state.recentActivity) _TodayRow(entry: e),
           SizedBox(height: bottomInset + 16),
         ]),
       ),

@@ -4,7 +4,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/physics.dart';
 import 'package:flutter/rendering.dart';
 
-import '../../data/mock_data.dart';
 import '../../data/models.dart';
 import '../../motion/haptics.dart';
 import '../../motion/transitions.dart';
@@ -50,19 +49,51 @@ class _HomeShellState extends State<HomeShell> with TickerProviderStateMixin {
   Timer? _bannerShow;
   Timer? _bannerHide;
   bool _started = false;
+  AppState? _appState;
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
     if (!_started) {
       _started = true;
-      AppScope.read(context).startStreaming();
-      _bannerShow = Timer(const Duration(milliseconds: 3200), _showBanner);
+      final state = AppScope.read(context);
+      // Held so dispose() needn't look up an inherited widget, which asserts
+      // once the element is defunct.
+      _appState = state;
+      state.startStreaming();
+      state.startPolling();
+      state.addListener(_onStateChanged);
+      _onStateChanged();
     }
+  }
+
+  /// The banner and deep links are driven by state rather than a timer: a
+  /// push or a poll surfaces a new alert, and a notification tap asks for
+  /// one by id.
+  void _onStateChanged() {
+    if (!mounted) return;
+    final state = AppScope.read(context);
+
+    final open = state.pendingOpen;
+    if (open != null) {
+      state.consumePendingOpen();
+      final alert = state.allAlerts.where((a) => a.id == open).firstOrNull;
+      if (alert != null) {
+        _hideBanner();
+        // Deep link from a notification: there is no card to grow out of.
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _openAlert(alert, Rect.zero);
+        });
+        return;
+      }
+    }
+
+    if (state.incoming != null && !_banner.isForwardOrCompleted) _showBanner();
   }
 
   @override
   void dispose() {
+    _appState?.removeListener(_onStateChanged);
     _bannerShow?.cancel();
     _bannerHide?.cancel();
     _player.dispose();
@@ -74,7 +105,7 @@ class _HomeShellState extends State<HomeShell> with TickerProviderStateMixin {
 
   // ---- banner
   void _showBanner() {
-    if (!mounted) return;
+    if (!mounted || AppScope.read(context).incoming == null) return;
     _bannerHide?.cancel();
     setState(() => _badgeBump++);
     _banner.forward();
@@ -113,6 +144,7 @@ class _HomeShellState extends State<HomeShell> with TickerProviderStateMixin {
 
   Future<void> _openAlert(Alert alert, Rect source) async {
     _hideBanner();
+    _state.dismissIncoming();
     final action = await Navigator.of(context).push<DetailAction>(
       ContainerTransformRoute(
         sourceRect: source,
@@ -123,11 +155,15 @@ class _HomeShellState extends State<HomeShell> with TickerProviderStateMixin {
     final inset = _bottomInset(context);
     switch (action) {
       case DetailAction.ignored:
-        _state.ignore(alert.id);
+        await _state.ignore(alert.id);
+        if (!mounted) return;
         _state.showToast('Alert ignored',
             bottomInset: inset, onUndo: () => _state.unignore(alert.id));
       case DetailAction.silenced:
-        _state.showToast('Silenced for 1 hour', bottomInset: inset);
+        await _state.silence(alert.id);
+        if (!mounted) return;
+        _state.showToast('Silenced for 1 hour',
+            bottomInset: inset, onUndo: () => _state.unignore(alert.id));
       case DetailAction.restarted:
         _state.showToast('Restart sent to Render · logged', bottomInset: inset);
       case DetailAction.logs:
@@ -181,7 +217,9 @@ class _HomeShellState extends State<HomeShell> with TickerProviderStateMixin {
     final expanded = context.isExpanded;
     final inset = _bottomInset(context);
     final selected = _playerExpanded ? ShellTab.logs : _tab;
-    final openCount = AppScope.of(context).openAlerts.length;
+    final state = AppScope.of(context);
+    final openCount = state.openAlertCount;
+    final incoming = state.incoming;
 
     final tabs = TabStack(
       index: _tab.index.clamp(0, 2),
@@ -223,28 +261,31 @@ class _HomeShellState extends State<HomeShell> with TickerProviderStateMixin {
             ),
           ),
         if (_playerVisible) _buildPlayer(context, area, expanded),
-        Positioned(
-          top: MediaQuery.paddingOf(context).top + 8,
-          left: 10,
-          right: 10,
-          child: Center(
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 480),
-              child: SlideTransition(
-                position: Tween(begin: const Offset(0, -1.6), end: Offset.zero).animate(
-                  CurvedAnimation(
-                      parent: _banner, curve: Motion.decelerate, reverseCurve: Motion.accelerate),
-                ),
-                child: IncomingBanner(
-                  key: _bannerKey,
-                  alert: MockData.alerts.first,
-                  onTap: () => _openAlert(MockData.alerts.first, rectOf(_bannerKey.currentContext!)),
-                  onDismiss: _hideBanner,
+        if (incoming != null)
+          Positioned(
+            top: MediaQuery.paddingOf(context).top + 8,
+            left: 10,
+            right: 10,
+            child: Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 480),
+                child: SlideTransition(
+                  position: Tween(begin: const Offset(0, -1.6), end: Offset.zero).animate(
+                    CurvedAnimation(
+                        parent: _banner,
+                        curve: Motion.decelerate,
+                        reverseCurve: Motion.accelerate),
+                  ),
+                  child: IncomingBanner(
+                    key: _bannerKey,
+                    alert: incoming,
+                    onTap: () => _openAlert(incoming, rectOf(_bannerKey.currentContext!)),
+                    onDismiss: _hideBanner,
+                  ),
                 ),
               ),
             ),
           ),
-        ),
       ]);
     });
 

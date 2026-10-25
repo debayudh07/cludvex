@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 
-import '../../data/mock_data.dart';
 import '../../data/models.dart';
 import '../../motion/haptics.dart';
 import '../../state/app_state.dart';
@@ -16,30 +15,75 @@ enum DetailAction { ignored, silenced, restarted, logs }
 /// Opened with a container transform from its alert card. Laid out like
 /// Uber's trip-status sheet: status headline, the agent's read, grouped
 /// actions, then evidence.
-class AlertDetailScreen extends StatelessWidget {
+class AlertDetailScreen extends StatefulWidget {
   const AlertDetailScreen({super.key, required this.alert});
 
+  /// The list row's copy, which GET /alerts returns without evidence. The
+  /// full record is fetched on open so the screen paints immediately.
   final Alert alert;
 
-  Future<void> _restart(BuildContext context, AppState state) async {
-    final service = MockData.service(alert.serviceId);
+  @override
+  State<AlertDetailScreen> createState() => _AlertDetailScreenState();
+}
+
+class _AlertDetailScreenState extends State<AlertDetailScreen> {
+  late Alert _alert = widget.alert;
+  bool _loadingEvidence = false;
+  bool _busy = false;
+
+  @override
+  void initState() {
+    super.initState();
+    if (!_alert.hasEvidence) _loadEvidence();
+  }
+
+  Future<void> _loadEvidence() async {
+    setState(() => _loadingEvidence = true);
+    try {
+      final full = await AppScope.read(context).alertDetail(_alert.id);
+      if (mounted) setState(() => _alert = full);
+    } catch (_) {
+      // The summary already on screen is still useful; leave it be.
+    } finally {
+      if (mounted) setState(() => _loadingEvidence = false);
+    }
+  }
+
+  Future<void> _restart(AppState state) async {
+    final name = _serviceName(state);
     final ok = await showConfirmSheet(
       context,
-      title: 'Restart ${service.name}?',
+      title: 'Restart $name?',
       body: state.autoRestart
           ? 'The agent is allowed to do this. You are doing it by hand now.'
           : "This is outside the agent's mandate, so it needs your tap. "
               'Render redeploys the current image.',
-      points: ['About 30 seconds of downtime', 'Logged to Activity with ${alert.occurrences} evidence lines'],
+      points: [
+        'About 30 seconds of downtime',
+        'Logged to Activity with ${_alert.occurrences} evidence lines',
+      ],
       confirmLabel: 'Restart now',
     );
-    if (ok && context.mounted) Navigator.of(context).pop(DetailAction.restarted);
+    if (!ok || !mounted) return;
+    setState(() => _busy = true);
+    final error = await state.restart(_alert.id);
+    if (!mounted) return;
+    setState(() => _busy = false);
+    if (error != null) {
+      state.showToast(error);
+      return;
+    }
+    Navigator.of(context).pop(DetailAction.restarted);
   }
+
+  String _serviceName(AppState state) =>
+      _alert.serviceName ?? state.serviceById(_alert.serviceId)?.name ?? _alert.serviceId;
 
   @override
   Widget build(BuildContext context) {
     final state = AppScope.of(context);
-    final service = MockData.service(alert.serviceId);
+    final alert = _alert;
+    final serviceName = _serviceName(state);
     final t = Theme.of(context).textTheme;
     final aboveGate = alert.confidence * 100 >= state.gate;
     final g = context.gutter;
@@ -78,7 +122,8 @@ class AlertDetailScreen extends StatelessWidget {
               Text(alert.headline,
                   style: t.headlineSmall?.copyWith(fontSize: context.displaySize(28), height: 1.2)),
               const SizedBox(height: 8),
-              Text('${service.name} · ×${alert.occurrences} · ${alert.since}', style: AppText.mono()),
+              Text('$serviceName · ×${alert.occurrences} · ${alert.sinceText}',
+                  style: AppText.mono()),
               const SizedBox(height: 20),
 
               // Agent's read
@@ -119,13 +164,17 @@ class AlertDetailScreen extends StatelessWidget {
               const SizedBox(height: 14),
 
               _ActionGroup(actions: [
-                _Action(Icons.restart_alt_rounded, 'Restart', () => _restart(context, state)),
-                _Action(Icons.terminal_rounded, 'Logs', () => Navigator.of(context).pop(DetailAction.logs)),
+                // v1 is notify-only unless the server sets ACTIONS_ENABLED.
+                if (state.actionsEnabled)
+                  _Action(Icons.restart_alt_rounded, 'Restart', _busy ? null : () => _restart(state)),
+                _Action(Icons.terminal_rounded, 'Logs',
+                    () => Navigator.of(context).pop(DetailAction.logs)),
                 _Action(Icons.notifications_off_outlined, 'Silence 1h', () {
                   Haptics.light();
                   Navigator.of(context).pop(DetailAction.silenced);
                 }),
-                _Action(Icons.close_rounded, 'Ignore', () => Navigator.of(context).pop(DetailAction.ignored)),
+                _Action(Icons.close_rounded, 'Ignore',
+                    () => Navigator.of(context).pop(DetailAction.ignored)),
               ]),
 
               SectionLabel('Evidence · ${alert.occurrences} lines'),
@@ -136,13 +185,36 @@ class AlertDetailScreen extends StatelessWidget {
                   borderRadius: BorderRadius.circular(Radii.card),
                   border: Border.all(color: AppColors.divider),
                 ),
-                child: Column(children: [for (final e in alert.evidence) _EvidenceRow(line: e)]),
+                child: _loadingEvidence && alert.evidence.isEmpty
+                    ? const Padding(
+                        padding: EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                        child: Skeleton(
+                          child: Column(children: [
+                            Bone(height: 10, width: 260),
+                            SizedBox(height: 8),
+                            Bone(height: 10, width: 200),
+                            SizedBox(height: 8),
+                            Bone(height: 10, width: 230),
+                          ]),
+                        ),
+                      )
+                    : alert.evidence.isEmpty
+                        ? Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                            child: Text('No log lines were stored for this alert.',
+                                style: AppText.mono(size: 11.5, color: AppColors.textFaint)),
+                          )
+                        : Column(
+                            children: [for (final e in alert.evidence) _EvidenceRow(line: e)]),
               ),
               const SizedBox(height: 14),
               Text(
-                state.autoRestart
-                    ? 'Auto-restart is on in your mandate. The agent would act on its own above ${state.gate}%.'
-                    : 'Restart is outside your mandate, so it asks you first. Change this in Mandate.',
+                !state.actionsEnabled
+                    ? 'This server runs notify-only, so the agent never touches production. '
+                        'Restart is unavailable until the operator enables actions.'
+                    : state.autoRestart
+                        ? 'Auto-restart is on in your mandate. The agent would act on its own above ${state.gate}%.'
+                        : 'Restart is outside your mandate, so it asks you first. Change this in Mandate.',
                 style: const TextStyle(fontSize: 12.5, color: AppColors.textFaint, height: 1.5),
               ),
             ]),
@@ -158,7 +230,9 @@ class _Action {
 
   final IconData icon;
   final String label;
-  final VoidCallback onTap;
+
+  /// null while the action is in flight.
+  final VoidCallback? onTap;
 }
 
 /// YouTube's 2025 grouped pill: related actions in one rounded container.
@@ -177,7 +251,9 @@ class _ActionGroup extends StatelessWidget {
           for (var i = 0; i < actions.length; i++) ...[
             if (i > 0) const VerticalDivider(width: 1, indent: 14, endIndent: 14, color: Color(0xFF262A36)),
             Expanded(
-              child: Pressable(
+              child: Opacity(
+                opacity: actions[i].onTap == null ? 0.5 : 1,
+                child: Pressable(
                 onTap: actions[i].onTap,
                 borderRadius: BorderRadius.zero,
                 semanticLabel: actions[i].label,
@@ -192,6 +268,7 @@ class _ActionGroup extends StatelessWidget {
                         style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
                   ]),
                 ),
+              ),
               ),
             ),
           ],

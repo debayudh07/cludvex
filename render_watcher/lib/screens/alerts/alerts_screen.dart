@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 
-import '../../data/mock_data.dart';
 import '../../data/models.dart';
 import '../../motion/haptics.dart';
 import '../../motion/transitions.dart';
@@ -40,6 +39,13 @@ class _AlertsScreenState extends State<AlertsScreen> with SingleTickerProviderSt
     super.dispose();
   }
 
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance
+        .addPostFrameCallback((_) => AppScope.read(context).refreshAlerts());
+  }
+
   void _pick(AppState state, AlertFilter f) {
     if (f == state.filter) return;
     Haptics.selection();
@@ -51,11 +57,16 @@ class _AlertsScreenState extends State<AlertsScreen> with SingleTickerProviderSt
   Widget build(BuildContext context) {
     final state = AppScope.of(context);
     final alerts = state.filteredAlerts;
+    final loading = state.alertsLoading && alerts.isEmpty;
     final g = context.gutter;
 
     return NotificationListener<UserScrollNotification>(
       onNotification: (n) => handleChromeScroll(n, widget.onChromeHidden),
-      child: CustomScrollView(slivers: [
+      child: RefreshIndicator(
+          onRefresh: () => Future.wait([state.refreshAlerts(), state.refreshOverview()]),
+          backgroundColor: AppColors.surface2,
+          color: AppColors.accentText,
+          child: CustomScrollView(slivers: [
         SliverAppBar(
           floating: true,
           snap: true,
@@ -69,7 +80,8 @@ class _AlertsScreenState extends State<AlertsScreen> with SingleTickerProviderSt
             Padding(
               padding: EdgeInsets.only(right: g),
               child: Center(
-                child: Text('280 lines → ${state.openAlerts.length} alerts',
+                child: Text(
+                    '${state.evidenceLineCount} lines → ${state.openAlertCount} alerts',
                     style: const TextStyle(fontSize: 12.5, color: AppColors.textMuted)),
               ),
             ),
@@ -99,35 +111,49 @@ class _AlertsScreenState extends State<AlertsScreen> with SingleTickerProviderSt
           padding: centeredSliverPadding(context, top: 8, bottom: widget.bottomInset),
           sliver: SliverFadeTransition(
             opacity: _fadeCurve,
-            sliver: alerts.isEmpty
-                ? const SliverToBoxAdapter(child: _EmptyState())
-                : SliverList.separated(
-                    itemCount: alerts.length,
-                    separatorBuilder: (_, _) => const SizedBox(height: 10),
-                    itemBuilder: (context, i) => AlertCard(
-                      alert: alerts[i],
-                      gate: state.gate,
-                      onOpen: widget.onOpen,
-                    ),
-                  ),
+            sliver: loading
+                ? const SliverToBoxAdapter(child: _LoadingList())
+                : alerts.isEmpty
+                    ? SliverToBoxAdapter(child: _EmptyState(error: state.alertsError))
+                    : SliverList.separated(
+                        itemCount: alerts.length,
+                        separatorBuilder: (_, _) => const SizedBox(height: 10),
+                        itemBuilder: (context, i) => AlertCard(
+                          alert: alerts[i],
+                          gate: state.gate,
+                          serviceName: alerts[i].serviceName ??
+                              state.serviceById(alerts[i].serviceId)?.name ??
+                              alerts[i].serviceId,
+                          onOpen: widget.onOpen,
+                        ),
+                      ),
           ),
         ),
-      ]),
+      ])),
     );
   }
 }
 
 class AlertCard extends StatelessWidget {
-  const AlertCard({super.key, required this.alert, required this.gate, required this.onOpen});
+  const AlertCard({
+    super.key,
+    required this.alert,
+    required this.gate,
+    required this.onOpen,
+    this.serviceName,
+  });
 
   final Alert alert;
   final int gate;
   final void Function(Alert alert, Rect source) onOpen;
+  final String? serviceName;
 
   @override
   Widget build(BuildContext context) {
-    final service = MockData.service(alert.serviceId);
-    final yourCall = alert.isOpen && alert.confidence * 100 < gate;
+    final name = serviceName ?? alert.serviceName ?? alert.serviceId;
+    // The backend already decided this (gate + verifier); fall back to the
+    // local gate only when the field is absent.
+    final yourCall = alert.needsReview || (alert.isOpen && alert.confidence * 100 < gate);
     return Builder(builder: (cardContext) {
       return Opacity(
         opacity: alert.isOpen ? 1 : 0.62,
@@ -135,7 +161,7 @@ class AlertCard extends StatelessWidget {
           onTap: () => onOpen(alert, rectOf(cardContext)),
           color: AppColors.surface1,
           borderRadius: BorderRadius.circular(Radii.card),
-          semanticLabel: '${alert.severity.label}: ${alert.title} on ${service.name}. '
+          semanticLabel: '${alert.severity.label}: ${alert.title} on $name. '
               'Agent ${(alert.confidence * 100).round()} percent sure.',
           child: IntrinsicHeight(
             child: Row(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
@@ -151,7 +177,8 @@ class AlertCard extends StatelessWidget {
                         const Pill('YOUR CALL', color: AppColors.accentText),
                       ],
                       const Spacer(),
-                      Text(alert.timeAgo, style: AppText.mono(size: 11.5, color: AppColors.textFaint)),
+                      Text(alert.timeAgoLabel,
+                          style: AppText.mono(size: 11.5, color: AppColors.textFaint)),
                     ]),
                     const SizedBox(height: 8),
                     Text(alert.title,
@@ -161,7 +188,7 @@ class AlertCard extends StatelessWidget {
                     const SizedBox(height: 10),
                     Row(children: [
                       Flexible(
-                        child: Text(service.name,
+                        child: Text(name,
                             overflow: TextOverflow.ellipsis,
                             style: AppText.mono(size: 11.5, color: AppColors.textSecondary)),
                       ),
@@ -183,20 +210,41 @@ class AlertCard extends StatelessWidget {
   }
 }
 
-class _EmptyState extends StatelessWidget {
-  const _EmptyState();
+class _LoadingList extends StatelessWidget {
+  const _LoadingList();
 
   @override
   Widget build(BuildContext context) {
-    return const Padding(
-      padding: EdgeInsets.symmetric(vertical: 64),
+    return const Skeleton(
       child: Column(children: [
-        Icon(Icons.inbox_outlined, size: 32, color: AppColors.textFaint),
-        SizedBox(height: 12),
-        Text('Nothing here', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
-        SizedBox(height: 6),
-        Text("The agent hasn't flagged anything in this filter.",
-            textAlign: TextAlign.center, style: TextStyle(color: AppColors.textMuted)),
+        RowSkeleton(widthFactor: 0.62),
+        RowSkeleton(widthFactor: 0.48),
+        RowSkeleton(widthFactor: 0.56),
+      ]),
+    );
+  }
+}
+
+class _EmptyState extends StatelessWidget {
+  const _EmptyState({this.error});
+
+  final String? error;
+
+  @override
+  Widget build(BuildContext context) {
+    final failed = error != null;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 64),
+      child: Column(children: [
+        Icon(failed ? Icons.cloud_off_rounded : Icons.inbox_outlined,
+            size: 32, color: AppColors.textFaint),
+        const SizedBox(height: 12),
+        Text(failed ? "Couldn't load alerts" : 'Nothing here',
+            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+        const SizedBox(height: 6),
+        Text(error ?? "The agent hasn't flagged anything in this filter.",
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: AppColors.textMuted)),
       ]),
     );
   }
