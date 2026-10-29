@@ -39,6 +39,13 @@ class Settings(BaseSettings):
     default_confidence_gate: int = 75
     default_max_alerts_per_hour: int = 6
 
+    # Free-tier hosting: run the watcher loop inside the API process. Render
+    # free web services sleep after 15 min without inbound traffic, so the
+    # API also pings its own public URL (Render sets RENDER_EXTERNAL_URL).
+    run_watcher_in_api: bool = False
+    render_external_url: str | None = None
+    keepalive_seconds: int = 600
+
     @property
     def render_ws_base(self) -> str:
         return self.render_api_base.replace("https://", "wss://").replace("http://", "ws://")

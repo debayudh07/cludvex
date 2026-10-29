@@ -39,24 +39,9 @@ services:
     healthCheckPath: /healthz
     autoDeploy: true
     envVars:
-      # The image listens on 8080; tell Render to route there.
-      - key: PORT
-        value: "8080"
-      - fromGroup: render-watcher-shared
-
-  # Background workers have no free plan. The watcher is meant to outlive a
-  # Render outage, so running it elsewhere (a small VM via docker compose) is
-  # preferable; delete this block if you do that.
-  - type: worker
-    name: render-watcher-worker
-    runtime: docker
-    dockerfilePath: ./Dockerfile
-    dockerContext: .
-    buildFilter:
-      paths: ["backend/**", "Dockerfile", ".dockerignore"]
-    dockerCommand: python -m app.watcher
-    plan: starter
-    region: singapore
-    autoDeploy: true
-    envVars:
+      # Free tier: the watcher runs inside the API and keeps it awake via
+      # RENDER_EXTERNAL_URL. Set false if you move the watcher to its own
+      # worker or VM (`python -m app.watcher`), or both will poll.
+      - key: RUN_WATCHER_IN_API
+        value: "true"
       - fromGroup: render-watcher-shared

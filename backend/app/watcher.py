@@ -110,17 +110,20 @@ async def process_service(store: Store, triager: Triager, svc: WatchedService) -
             detail=f"{stale.title} on {svc.name} stopped recurring.", meta=stale.code, alert_id=stale.id))
 
 
-async def run_forever() -> None:
+async def run_forever(stop: asyncio.Event | None = None) -> None:
+    """Standalone: owns SIGINT/SIGTERM. Embedded in the API (pass `stop`):
+    leaves signals to uvicorn and exits when the caller sets `stop`."""
     s = get_settings()
     store = Store(db())
     triager = GeminiTriager()
-    stop = asyncio.Event()
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        try:
-            loop.add_signal_handler(sig, stop.set)
-        except NotImplementedError:  # Windows
-            pass
+    if stop is None:
+        stop = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                loop.add_signal_handler(sig, stop.set)
+            except NotImplementedError:  # Windows
+                pass
 
     log.info("watcher.start", poll=s.watch_poll_seconds)
     while not stop.is_set():
