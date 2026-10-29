@@ -1,0 +1,60 @@
+# Render Blueprint: Dashboard -> New -> Blueprint -> pick this repo.
+# Secrets are `sync: false`, so Render prompts for them on first deploy.
+envVarGroups:
+  - name: render-watcher-shared
+    envVars:
+      - key: ENV
+        value: production
+      - key: LOG_LEVEL
+        value: INFO
+      - key: FIREBASE_PROJECT_ID
+        sync: false
+      - key: FIREBASE_SERVICE_ACCOUNT_JSON
+        sync: false
+      - key: ENCRYPTION_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: TRIAGE_MODEL
+        value: gemini-3.8-flash
+      - key: VERIFIER_MODEL
+        value: gemini-3.8-flash
+      - key: ACTIONS_ENABLED
+        value: "false"
+      - key: WATCH_POLL_SECONDS
+        value: "60"
+      - key: MAX_WATCHED_SERVICES
+        value: "3"
+
+services:
+  - type: web
+    name: render-watcher-api
+    runtime: docker
+    rootDir: backend
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: free
+    region: singapore
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      # The image listens on 8080; tell Render to route there.
+      - key: PORT
+        value: "8080"
+      - fromGroup: render-watcher-shared
+
+  # Background workers have no free plan. The watcher is meant to outlive a
+  # Render outage, so running it elsewhere (a small VM via docker compose) is
+  # preferable; delete this block if you do that.
+  - type: worker
+    name: render-watcher-worker
+    runtime: docker
+    rootDir: backend
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    dockerCommand: python -m app.watcher
+    plan: starter
+    region: singapore
+    autoDeploy: true
+    envVars:
+      - fromGroup: render-watcher-shared
