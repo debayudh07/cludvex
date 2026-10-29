@@ -1,4 +1,5 @@
 /// Build-time configuration, passed with --dart-define.
+/// Defaults to the production backend on Render.
 ///
 ///   # Android emulator reaching a backend on the host machine
 ///   flutter run --dart-define=API_BASE_URL=http://10.0.2.2:8080
@@ -6,7 +7,7 @@
 ///   flutter run --dart-define=API_BASE_URL=http://192.168.1.20:8080
 abstract final class AppConfig {
   static const apiBaseUrl =
-      String.fromEnvironment('API_BASE_URL', defaultValue: 'http://10.0.2.2:8080');
+      String.fromEnvironment('API_BASE_URL', defaultValue: 'https://cludvex.onrender.com');
 
   /// How often the foreground app refetches overview/alerts. Pushes arrive
   /// out of band; this is the floor, not the only path.
