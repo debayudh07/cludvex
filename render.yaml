@@ -30,11 +30,10 @@ services:
   - type: web
     name: render-watcher-api
     runtime: docker
-    # Docker paths are relative to the repo root, not rootDir.
-    dockerfilePath: ./backend/Dockerfile
-    dockerContext: ./backend
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
     buildFilter:
-      paths: ["backend/**"]
+      paths: ["backend/**", "Dockerfile", ".dockerignore"]
     plan: free
     region: singapore
     healthCheckPath: /healthz
@@ -51,10 +50,10 @@ services:
   - type: worker
     name: render-watcher-worker
     runtime: docker
-    dockerfilePath: ./backend/Dockerfile
-    dockerContext: ./backend
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
     buildFilter:
-      paths: ["backend/**"]
+      paths: ["backend/**", "Dockerfile", ".dockerignore"]
     dockerCommand: python -m app.watcher
     plan: starter
     region: singapore

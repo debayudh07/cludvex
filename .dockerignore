@@ -1,0 +1,4 @@
+*
+!backend/pyproject.toml
+!backend/app
+**/__pycache__
